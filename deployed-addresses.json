@@ -1,0 +1,12 @@
+{
+  "network": "hashkey-testnet",
+  "chainId": 133,
+  "deployer": "0xF950F6BCa8db86Ebc3fdc9eC53c7DF7aA45334a4",
+  "verifier": "0xEba8c1C0929dbee4B5E702451e908A9C2Df26E09",
+  "privacyPool": "0xfe52E1FeDc1721Ef449821776AC2372493262E9d",
+  "paymentGateway": "0x71241A21e09986014269D84bb188D2630d905e80",
+  "relayer": "0xc7640913d277E505b7b763444540dA3DD1BF1cFb",
+  "usdcTestnet": "0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6",
+  "usdtTestnet": "0x372325443233fEbaC1F6998aC750276468c83CC6",
+  "deployedAt": "2026-04-04T11:15:19.863Z"
+}

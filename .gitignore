@@ -1,0 +1,65 @@
+**/settings/Mainnet.toml
+**/settings/Testnet.toml
+.cache/**
+history.txt
+
+logs
+*.log
+npm-debug.log*
+coverage
+*.info
+costs-reports.json
+node_modules
+.env
+
+# Environment
+.env
+.env.local
+.env.testnet
+.env.mainnet
+
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Clarinet / Stacks
+.clarinet/
+deployments/default.testnet-plan.yaml
+deployments/default.mainnet-plan.yaml
+
+# ZK Circuit artifacts (large files — host separately)
+*.zkey
+*.wasm
+*.r1cs
+*.sym
+pot*.ptau
+circuit/powersOfTau28_hez_final_12.ptau
+
+# Build outputs
+dist/
+build/
+.next/
+
+# Logs
+*.log
+npm-debug.log*
+relayer/logs/
+
+# Keys and secrets
+hsp/merchant_private_key.pem
+*.pem
+*.key
+
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Temp
+*.tmp
+*.cache
+.cache/

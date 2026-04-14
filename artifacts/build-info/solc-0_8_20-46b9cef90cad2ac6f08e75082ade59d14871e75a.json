@@ -1,0 +1,40 @@
+{
+  "_format": "hh3-sol-build-info-1",
+  "id": "solc-0_8_20-46b9cef90cad2ac6f08e75082ade59d14871e75a",
+  "solcVersion": "0.8.20",
+  "solcLongVersion": "0.8.20+commit.a1b79de6",
+  "compilerType": "solc",
+  "userSourceNameMap": {
+    "contracts/PaymentGateway.sol": "project/contracts/PaymentGateway.sol"
+  },
+  "input": {
+    "language": "Solidity",
+    "settings": {
+      "evmVersion": "shanghai",
+      "optimizer": {
+        "enabled": true,
+        "runs": 200
+      },
+      "outputSelection": {
+        "*": {
+          "": [
+            "ast"
+          ],
+          "*": [
+            "abi",
+            "evm.bytecode",
+            "evm.deployedBytecode",
+            "evm.methodIdentifiers",
+            "metadata"
+          ]
+        }
+      },
+      "remappings": []
+    },
+    "sources": {
+      "project/contracts/PaymentGateway.sol": {
+        "content": "// SPDX-License-Identifier: MIT\r\npragma solidity ^0.8.20;\r\n\r\ncontract PaymentGateway {\r\n\r\n    error InvoiceExists();\r\n    error InvoiceNotFound();\r\n    error AlreadyPaid();\r\n    error InvalidAmount();\r\n    error NotAuthorized();\r\n    error InvalidToken();\r\n\r\n    struct Invoice {\r\n        address merchant;\r\n        address token;\r\n        uint256 amount;\r\n        bool    paid;\r\n        bool    exists;\r\n    }\r\n\r\n    mapping(bytes32 => Invoice) private invoices;\r\n    address public immutable privacyPool;\r\n\r\n    event InvoiceCreated(bytes32 indexed invoiceId, address indexed merchant, address token, uint256 amount);\r\n    event InvoicePaid(bytes32 indexed invoiceId, address indexed merchant, address token, uint256 amount);\r\n\r\n    constructor(address _privacyPool) {\r\n        require(_privacyPool != address(0), \"Invalid pool\");\r\n        privacyPool = _privacyPool;\r\n    }\r\n\r\n    function createInvoice(bytes32 invoiceId, address token, uint256 amount) external {\r\n        if (invoices[invoiceId].exists) revert InvoiceExists();\r\n        if (amount == 0)               revert InvalidAmount();\r\n        if (token == address(0))       revert InvalidToken();\r\n\r\n        invoices[invoiceId] = Invoice({\r\n            merchant: msg.sender,\r\n            token:    token,\r\n            amount:   amount,\r\n            paid:     false,\r\n            exists:   true\r\n        });\r\n\r\n        emit InvoiceCreated(invoiceId, msg.sender, token, amount);\r\n    }\r\n\r\n    function payInvoice(bytes32 invoiceId) external returns (address merchant) {\r\n        if (msg.sender != privacyPool)    revert NotAuthorized();\r\n        if (!invoices[invoiceId].exists)  revert InvoiceNotFound();\r\n        if (invoices[invoiceId].paid)     revert AlreadyPaid();\r\n\r\n        invoices[invoiceId].paid = true;\r\n        merchant = invoices[invoiceId].merchant;\r\n\r\n        emit InvoicePaid(invoiceId, merchant, invoices[invoiceId].token, invoices[invoiceId].amount);\r\n    }\r\n\r\n    function getInvoice(bytes32 invoiceId) external view returns (\r\n        address merchant, address token, uint256 amount, bool paid, bool exists\r\n    ) {\r\n        Invoice storage inv = invoices[invoiceId];\r\n        return (inv.merchant, inv.token, inv.amount, inv.paid, inv.exists);\r\n    }\r\n\r\n    function getAmount(bytes32 invoiceId) external view returns (uint256) {\r\n        if (!invoices[invoiceId].exists) revert InvoiceNotFound();\r\n        return invoices[invoiceId].amount;\r\n    }\r\n\r\n    function getToken(bytes32 invoiceId) external view returns (address) {\r\n        if (!invoices[invoiceId].exists) revert InvoiceNotFound();\r\n        return invoices[invoiceId].token;\r\n    }\r\n\r\n    function getMerchant(bytes32 invoiceId) external view returns (address) {\r\n        if (!invoices[invoiceId].exists) revert InvoiceNotFound();\r\n        return invoices[invoiceId].merchant;\r\n    }\r\n\r\n    function isPaid(bytes32 invoiceId) external view returns (bool) {\r\n        return invoices[invoiceId].paid;\r\n    }\r\n}\r\n"
+      }
+    }
+  }
+}

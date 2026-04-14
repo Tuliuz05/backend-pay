@@ -1,0 +1,23 @@
+{
+  "name": "aurionpay-relayer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node router.js"
+  },
+  "dependencies": {
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
+    "ethers": "^6.11.1",
+    "express": "^4.22.1",
+    "snarkjs": "^0.7.6",
+    "path": "^0.12.7"
+  },
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
