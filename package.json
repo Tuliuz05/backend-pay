@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "postinstall": "npm install --prefix ai && npm install --prefix hsp && npm install --prefix relayer"
+    "start": "node index.js"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.6.1",

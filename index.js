@@ -44,11 +44,4 @@ app.use((req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`AurionPay backend running on port ${PORT}`);
-  const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
-  if (RENDER_URL) {
-    setInterval(() => fetch(`${RENDER_URL}/health`).catch(() => {}), 10 * 60 * 1000);
-    console.log(`Keep-alive: ${RENDER_URL}/health`);
-  }
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
