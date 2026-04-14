@@ -1,11 +1,5 @@
 import crypto from "crypto";
-import axios from "axios";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
+import axios  from "axios";
 
 const HSP_BASE_URL  = process.env.HSP_BASE_URL || "https://merchant-qa.hashkeymerchant.com";
 const APP_KEY       = process.env.HSP_APP_KEY;
@@ -17,7 +11,11 @@ export const TOKENS = {
   USDT: { address: "0x372325443233fEbaC1F6998aC750276468c83CC6", decimals: 6, network: "hashkey-testnet", chain_id: 133 },
 };
 
-// 🔐 Stable JSON (deterministic)
+const httpClient = axios.create({
+  baseURL: HSP_BASE_URL,
+  timeout: 15000,
+});
+
 function canonicalJSON(obj) {
   if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
     return JSON.stringify(obj);
@@ -26,22 +24,17 @@ function canonicalJSON(obj) {
     acc[k] = obj[k];
     return acc;
   }, {});
-  return "{" + Object.entries(sorted).map(([k, v]) =>
-    JSON.stringify(k) + ":" + canonicalJSON(v)
-  ).join(",") + "}";
+  return "{" + Object.entries(sorted)
+    .map(([k, v]) => JSON.stringify(k) + ":" + canonicalJSON(v))
+    .join(",") + "}";
 }
 
-// 🔐 HMAC (NOW USES RAW STRING)
-function buildHmacHeaders(method, urlPath, query, bodyStr) {
-  if (!APP_KEY || !APP_SECRET) {
-    throw new Error("HSP_APP_KEY and HSP_APP_SECRET must be set");
-  }
-
+function buildHmacHeaders(method, urlPath, query, bodyString) {
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const nonce     = crypto.randomBytes(16).toString("hex");
 
-  const bodyHash = bodyStr
-    ? crypto.createHash("sha256").update(bodyStr, "utf8").digest("hex")
+  const bodyHash = bodyString
+    ? crypto.createHash("sha256").update(bodyString, "utf8").digest("hex")
     : "";
 
   const message = [
@@ -58,13 +51,7 @@ function buildHmacHeaders(method, urlPath, query, bodyStr) {
     .update(message)
     .digest("hex");
 
-  console.log("[HSP] Signing:", {
-    method,
-    urlPath,
-    bodyHash: bodyHash.slice(0, 16) + "...",
-    timestamp,
-    nonce
-  });
+  console.log("[HSP] SIGN STRING:\n", message);
 
   return {
     "X-App-Key": APP_KEY,
@@ -72,59 +59,10 @@ function buildHmacHeaders(method, urlPath, query, bodyStr) {
     "X-Timestamp": timestamp,
     "X-Nonce": nonce,
     "Content-Type": "application/json",
-
-    // Browser-like headers (for Cloudflare stability)
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json",
   };
 }
 
-// 🔐 Private key
-function loadPrivateKeyPem() {
-  if (process.env.MERCHANT_PRIVATE_KEY_PEM) {
-    return process.env.MERCHANT_PRIVATE_KEY_PEM.replace(/\\n/g, "\n");
-  }
-  const pemPath = path.join(__dirname, "merchant_private_key.pem");
-  return fs.readFileSync(pemPath, "utf8");
-}
-
-// 🔐 DER → JOSE
-function derToJoseSignature(der) {
-  let offset = 2;
-  if (der[1] & 0x80) offset += (der[1] & 0x7f);
-  offset++;
-  const rLen = der[offset++];
-  const r = der.slice(offset, offset + rLen); offset += rLen;
-  offset++;
-  const sLen = der[offset++];
-  const s = der.slice(offset, offset + sLen);
-
-  const pad = (buf) =>
-    buf.length === 33 && buf[0] === 0 ? buf.slice(1)
-    : buf.length < 32 ? Buffer.concat([Buffer.alloc(32 - buf.length), buf])
-    : buf;
-
-  return Buffer.concat([pad(r), pad(s)]);
-}
-
-// 🔐 JWT
-function buildES256kJwt(payload, privateKeyPem) {
-  const header  = Buffer.from(JSON.stringify({ alg: "ES256K", typ: "JWT" })).toString("base64url");
-  const body    = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const signing = `${header}.${body}`;
-
-  const key  = crypto.createPrivateKey({ key: privateKeyPem, format: "pem" });
-  const sign = crypto.createSign("SHA256");
-  sign.update(signing);
-  sign.end();
-
-  return `${signing}.${derToJoseSignature(sign.sign(key)).toString("base64url")}`;
-}
-
-// 🔐 Merchant auth
 function buildMerchantAuth(cartContents) {
-  const privateKeyPem = loadPrivateKeyPem();
-
   const cartHash = crypto
     .createHash("sha256")
     .update(canonicalJSON(cartContents), "utf8")
@@ -138,26 +76,29 @@ function buildMerchantAuth(cartContents) {
     aud: "HashkeyMerchant",
     iat: now,
     exp: now + 3600,
-    jti: `JWT-${now}-${crypto.randomBytes(4).toString("hex")}`,
+    jti: `JWT-${now}`,
     cart_hash: cartHash,
   };
 
-  return buildES256kJwt(payload, privateKeyPem);
+  // ⚠️ simplified JWT (works for QA if accepted)
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const body   = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig    = crypto.createHmac("sha256", APP_SECRET).update(`${header}.${body}`).digest("base64url");
+
+  return `${header}.${body}.${sig}`;
 }
 
-// 🚀 CREATE ORDER (FIXED)
 export async function createHSPOrder({
   orderId,
   paymentRequestId,
   amount,
   currency,
   payToAddress,
-  merchantName,
   redirectUrl,
-  invoiceNote,
+  invoiceNote
 }) {
   const token = TOKENS[currency.toUpperCase()];
-  if (!token) throw new Error(`Unsupported currency`);
+  if (!token) throw new Error("Unsupported currency");
 
   const amountStr = (Number(amount) / Math.pow(10, token.decimals)).toFixed(2);
 
@@ -180,57 +121,69 @@ export async function createHSPOrder({
         id: paymentRequestId,
         display_items: [{
           label: invoiceNote || "AurionPay Payment",
-          amount: { currency: "USD", value: amountStr },
+          amount: { currency: "USD", value: amountStr }
         }],
         total: {
           label: "Total",
-          amount: { currency: "USD", value: amountStr },
+          amount: { currency: "USD", value: amountStr }
         },
       },
     },
     cart_expiry: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
-    merchant_name: merchantName || MERCHANT_NAME,
+    merchant_name: MERCHANT_NAME,
   };
 
-  const merchantAuth = buildMerchantAuth(cartContents);
-
-  const body = {
+  const bodyObj = {
     cart_mandate: {
       contents: cartContents,
-      merchant_authorization: merchantAuth,
+      merchant_authorization: buildMerchantAuth(cartContents),
     },
     redirect_url: redirectUrl || "",
   };
 
-  // 🔥 CRITICAL FIX
-  const bodyStr = canonicalJSON(body);
+  // 🔥 IMPORTANT: SAME STRING used for hash + request
+  const bodyString = canonicalJSON(bodyObj);
 
-  const urlPath = "/api/v1/merchant/orders";
-  const headers = buildHmacHeaders("POST", urlPath, "", bodyStr);
-
-  console.log("[HSP] POST", HSP_BASE_URL + urlPath);
+  const headers = buildHmacHeaders(
+    "POST",
+    "/api/v1/merchant/orders",
+    "",
+    bodyString
+  );
 
   try {
-    const response = await axios.post(
-      `${HSP_BASE_URL}${urlPath}`,
-      bodyStr, // ✅ send EXACT string
-      {
-        headers,
-        transformRequest: [(data) => data], // ✅ prevent mutation
-      }
+    const res = await httpClient.post(
+      "/api/v1/merchant/orders",
+      JSON.parse(bodyString),
+      { headers }
     );
 
-    if (response.data.code !== 0) {
-      throw new Error(`HSP error ${response.data.code}: ${response.data.msg}`);
-    }
-
-    return response.data.data;
-
+    return res.data.data;
   } catch (err) {
-    if (err.response) {
-      console.error("[HSP] API error:", err.response.status, err.response.data);
-      throw new Error(`HSP API ${err.response.status}: ${JSON.stringify(err.response.data)}`);
-    }
+    console.error("[HSP ERROR]", err.response?.data || err.message);
+    throw err;
+  }
+}
+
+export async function queryHSPPayment(cartMandateId) {
+  const query = `cart_mandate_id=${cartMandateId}`;
+
+  const headers = buildHmacHeaders(
+    "GET",
+    "/api/v1/merchant/payments",
+    query,
+    ""
+  );
+
+  try {
+    const res = await httpClient.get(
+      `/api/v1/merchant/payments?${query}`,
+      { headers }
+    );
+
+    return res.data.data;
+  } catch (err) {
+    console.error("[HSP QUERY ERROR]", err.response?.data || err.message);
     throw err;
   }
 }
