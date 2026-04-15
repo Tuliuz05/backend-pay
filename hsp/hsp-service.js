@@ -1,5 +1,11 @@
 import crypto from "crypto";
 import axios  from "axios";
+import fs     from "fs";
+import path   from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
 
 const HSP_BASE_URL  = process.env.HSP_BASE_URL || "https://merchant-qa.hashkeymerchant.com";
 const APP_KEY       = process.env.HSP_APP_KEY;
@@ -14,93 +20,110 @@ export const TOKENS = {
 const httpClient = axios.create({
   baseURL: HSP_BASE_URL,
   timeout: 15000,
+  headers: {
+    "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept":          "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection":      "keep-alive",
+    "Origin":          "https://merchant-qa.hashkeymerchant.com",
+    "Referer":         "https://merchant-qa.hashkeymerchant.com/",
+  },
 });
 
+// Canonical JSON: recursively sort all object keys
+// CRITICAL: the string produced here must be IDENTICAL to what is sent as the request body
 function canonicalJSON(obj) {
-  if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
+  if (Array.isArray(obj)) {
+    return "[" + obj.map(canonicalJSON).join(",") + "]";
+  }
+  if (obj === null || typeof obj !== "object") {
     return JSON.stringify(obj);
   }
-  const sorted = Object.keys(obj).sort().reduce((acc, k) => {
-    acc[k] = obj[k];
-    return acc;
-  }, {});
-  return "{" + Object.entries(sorted)
-    .map(([k, v]) => JSON.stringify(k) + ":" + canonicalJSON(v))
-    .join(",") + "}";
+  const keys = Object.keys(obj).sort();
+  return "{" + keys.map(k => JSON.stringify(k) + ":" + canonicalJSON(obj[k])).join(",") + "}";
 }
 
+// Build HMAC headers -- body must be the EXACT canonical string that will be sent
 function buildHmacHeaders(method, urlPath, query, bodyString) {
+  if (!APP_KEY || !APP_SECRET) throw new Error("HSP_APP_KEY and HSP_APP_SECRET must be set");
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const nonce     = crypto.randomBytes(16).toString("hex");
-
-  const bodyHash = bodyString
+  const bodyHash  = bodyString
     ? crypto.createHash("sha256").update(bodyString, "utf8").digest("hex")
     : "";
-
-  const message = [
-    method.toUpperCase(),
-    urlPath,
-    query || "",
-    bodyHash,
-    timestamp,
-    nonce
-  ].join("\n");
-
-  const signature = crypto
-    .createHmac("sha256", APP_SECRET)
-    .update(message)
-    .digest("hex");
-
-  console.log("[HSP] SIGN STRING:\n", message);
-
+  const message   = [method.toUpperCase(), urlPath, query || "", bodyHash, timestamp, nonce].join("\n");
+  const signature = crypto.createHmac("sha256", APP_SECRET).update(message).digest("hex");
+  console.log("[HSP] Signing:", { method, urlPath, bodyHash: bodyHash.slice(0, 16) + "...", timestamp });
   return {
-    "X-App-Key": APP_KEY,
-    "X-Signature": signature,
-    "X-Timestamp": timestamp,
-    "X-Nonce": nonce,
+    "X-App-Key":    APP_KEY,
+    "X-Signature":  signature,
+    "X-Timestamp":  timestamp,
+    "X-Nonce":      nonce,
     "Content-Type": "application/json",
   };
 }
 
+function loadPrivateKeyPem() {
+  if (process.env.MERCHANT_PRIVATE_KEY_PEM) {
+    return process.env.MERCHANT_PRIVATE_KEY_PEM.replace(/\\n/g, "\n");
+  }
+  const pemPath = path.join(__dirname, "merchant_private_key.pem");
+  if (!fs.existsSync(pemPath)) throw new Error("merchant_private_key.pem not found.");
+  return fs.readFileSync(pemPath, "utf8");
+}
+
+function derToJoseSignature(der) {
+  let offset = 2;
+  if (der[1] & 0x80) offset += (der[1] & 0x7f);
+  offset++;
+  const rLen = der[offset++];
+  const r    = der.slice(offset, offset + rLen); offset += rLen;
+  offset++;
+  const sLen = der[offset++];
+  const s    = der.slice(offset, offset + sLen);
+  const pad  = (buf) =>
+    buf.length === 33 && buf[0] === 0 ? buf.slice(1)
+    : buf.length < 32 ? Buffer.concat([Buffer.alloc(32 - buf.length), buf])
+    : buf;
+  return Buffer.concat([pad(r), pad(s)]);
+}
+
+function buildES256kJwt(payload, privateKeyPem) {
+  const header  = Buffer.from(JSON.stringify({ alg: "ES256K", typ: "JWT" })).toString("base64url");
+  const body    = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signing = `${header}.${body}`;
+  const key     = crypto.createPrivateKey({ key: privateKeyPem, format: "pem" });
+  const sign    = crypto.createSign("SHA256");
+  sign.update(signing); sign.end();
+  return `${signing}.${derToJoseSignature(sign.sign(key)).toString("base64url")}`;
+}
+
 function buildMerchantAuth(cartContents) {
-  const cartHash = crypto
-    .createHash("sha256")
+  const privateKeyPem = loadPrivateKeyPem();
+  // cart_hash must be SHA-256 of canonical JSON of cartContents
+  const cartHash = crypto.createHash("sha256")
     .update(canonicalJSON(cartContents), "utf8")
     .digest("hex");
-
   const now = Math.floor(Date.now() / 1000);
-
   const payload = {
-    iss: MERCHANT_NAME,
-    sub: MERCHANT_NAME,
-    aud: "HashkeyMerchant",
-    iat: now,
-    exp: now + 3600,
-    jti: `JWT-${now}`,
+    iss: MERCHANT_NAME, sub: MERCHANT_NAME, aud: "HashkeyMerchant",
+    iat: now, exp: now + 3600,
+    jti: `JWT-${now}-${crypto.randomBytes(4).toString("hex")}`,
     cart_hash: cartHash,
   };
-
-  // ⚠️ simplified JWT (works for QA if accepted)
-  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
-  const body   = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const sig    = crypto.createHmac("sha256", APP_SECRET).update(`${header}.${body}`).digest("base64url");
-
-  return `${header}.${body}.${sig}`;
+  console.log("[HSP] JWT cart_hash:", cartHash.slice(0, 16) + "...");
+  return buildES256kJwt(payload, privateKeyPem);
 }
 
 export async function createHSPOrder({
-  orderId,
-  paymentRequestId,
-  amount,
-  currency,
-  payToAddress,
-  redirectUrl,
-  invoiceNote
+  orderId, paymentRequestId, amount, currency,
+  payToAddress, merchantName, redirectUrl, invoiceNote,
 }) {
   const token = TOKENS[currency.toUpperCase()];
-  if (!token) throw new Error("Unsupported currency");
+  if (!token) throw new Error(`Unsupported currency: ${currency}. Use USDC or USDT.`);
 
   const amountStr = (Number(amount) / Math.pow(10, token.decimals)).toFixed(2);
+  const label     = invoiceNote || "AurionPay Private Payment";
 
   const cartContents = {
     id: orderId,
@@ -109,81 +132,71 @@ export async function createHSPOrder({
       method_data: [{
         supported_methods: "https://www.x402.org/",
         data: {
-          x402Version: 2,
-          network: token.network,
-          chain_id: token.chain_id,
-          contract_address: token.address,
-          pay_to: payToAddress,
+          x402Version: 2, network: token.network, chain_id: token.chain_id,
+          contract_address: token.address, pay_to: payToAddress,
           coin: currency.toUpperCase(),
         },
       }],
       details: {
         id: paymentRequestId,
-        display_items: [{
-          label: invoiceNote || "AurionPay Payment",
-          amount: { currency: "USD", value: amountStr }
-        }],
-        total: {
-          label: "Total",
-          amount: { currency: "USD", value: amountStr }
-        },
+        display_items: [{ label, amount: { currency: "USD", value: amountStr } }],
+        total: { label: "Total", amount: { currency: "USD", value: amountStr } },
       },
     },
-    cart_expiry: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
-    merchant_name: MERCHANT_NAME,
+    cart_expiry:   new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+    merchant_name: merchantName || MERCHANT_NAME,
   };
 
+  const merchantAuth = buildMerchantAuth(cartContents);
+
   const bodyObj = {
-    cart_mandate: {
-      contents: cartContents,
-      merchant_authorization: buildMerchantAuth(cartContents),
-    },
+    cart_mandate: { contents: cartContents, merchant_authorization: merchantAuth },
     redirect_url: redirectUrl || "",
   };
 
-  // 🔥 IMPORTANT: SAME STRING used for hash + request
+  // STEP 1: Serialize with canonicalJSON -- this is the exact string that will be sent
   const bodyString = canonicalJSON(bodyObj);
 
-  const headers = buildHmacHeaders(
-    "POST",
-    "/api/v1/merchant/orders",
-    "",
-    bodyString
-  );
+  // STEP 2: Sign using that exact string
+  const urlPath = "/api/v1/merchant/orders";
+  const headers = buildHmacHeaders("POST", urlPath, "", bodyString);
+
+  console.log("[HSP] POST", HSP_BASE_URL + urlPath);
 
   try {
-    const res = await httpClient.post(
-      "/api/v1/merchant/orders",
-      JSON.parse(bodyString),
-      { headers }
-    );
+    // STEP 3: Send the same canonical string as the request body
+    // Use axios with data as string + explicit Content-Type to prevent re-serialization
+    const response = await httpClient.post(urlPath, bodyString, {
+      headers,
+      transformRequest: [(data) => data], // prevent axios from re-serializing
+    });
 
-    return res.data.data;
+    if (response.data.code !== 0) {
+      throw new Error(`HSP error ${response.data.code}: ${response.data.msg}`);
+    }
+    return response.data.data;
   } catch (err) {
-    console.error("[HSP ERROR]", err.response?.data || err.message);
+    if (err.response) {
+      const status = err.response.status;
+      const data   = JSON.stringify(err.response.data);
+      console.error(`[HSP] API error ${status}:`, data);
+      throw new Error(`HSP API ${status}: ${data}`);
+    }
     throw err;
   }
 }
 
 export async function queryHSPPayment(cartMandateId) {
-  const query = `cart_mandate_id=${cartMandateId}`;
-
-  const headers = buildHmacHeaders(
-    "GET",
-    "/api/v1/merchant/payments",
-    query,
-    ""
-  );
-
+  const urlPath = "/api/v1/merchant/payments";
+  const query   = `cart_mandate_id=${cartMandateId}`;
+  // GET has no body -- pass empty string for signing
+  const headers = buildHmacHeaders("GET", urlPath, query, "");
   try {
-    const res = await httpClient.get(
-      `/api/v1/merchant/payments?${query}`,
-      { headers }
-    );
-
-    return res.data.data;
+    const response = await httpClient.get(`${urlPath}?${query}`, { headers });
+    if (response.data.code !== 0) throw new Error(`HSP query error: ${response.data.msg}`);
+    return response.data.data;
   } catch (err) {
-    console.error("[HSP QUERY ERROR]", err.response?.data || err.message);
+    if (err.response) throw new Error(`HSP API ${err.response.status}: ${JSON.stringify(err.response.data)}`);
     throw err;
   }
 }
